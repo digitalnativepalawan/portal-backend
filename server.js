@@ -44,7 +44,6 @@ app.post('/api/bootstrap', async (_, res) => {
         quantity NUMERIC(10,2) NOT NULL,
         unit_cost NUMERIC(12,2) NOT NULL,
         total NUMERIC(12,2) GENERATED ALWAYS AS (quantity * unit_cost) STORED,
-        image_url TEXT, -- store file/image link
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `)
@@ -56,6 +55,7 @@ app.post('/api/bootstrap', async (_, res) => {
 })
 
 // --- TASKS ---
+// Read tasks
 app.get('/api/tasks', async (_, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id DESC')
@@ -65,6 +65,7 @@ app.get('/api/tasks', async (_, res) => {
   }
 })
 
+// Create task
 app.post('/api/tasks', async (req, res) => {
   try {
     const { title, status = 'todo', amount = 0 } = req.body ?? {}
@@ -80,34 +81,8 @@ app.post('/api/tasks', async (req, res) => {
   }
 })
 
-// --- LABOR ---
-app.get('/api/labor', async (_, res) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM labor ORDER BY id DESC')
-    res.json({ ok: true, data: rows })
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message })
-  }
-})
-
-app.post('/api/labor', async (req, res) => {
-  try {
-    const { worker_name, role, hours, rate } = req.body ?? {}
-    if (!worker_name || !hours || !rate) {
-      return res.status(400).json({ ok: false, error: 'worker_name, hours, and rate are required' })
-    }
-
-    const { rows } = await pool.query(
-      'INSERT INTO labor (worker_name, role, hours, rate) VALUES ($1, $2, $3, $4) RETURNING *',
-      [worker_name, role, hours, rate]
-    )
-    res.status(201).json({ ok: true, data: rows[0] })
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message })
-  }
-})
-
 // --- MATERIALS ---
+// Read materials
 app.get('/api/materials', async (_, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM materials ORDER BY id DESC')
@@ -117,4 +92,22 @@ app.get('/api/materials', async (_, res) => {
   }
 })
 
-app.post('/api/materials
+// Create material
+app.post('/api/materials', async (req, res) => {
+  try {
+    const { item_name, category, quantity, unit_cost } = req.body ?? {}
+    if (!item_name) return res.status(400).json({ ok: false, error: 'item_name is required' })
+
+    const { rows } = await pool.query(
+      `INSERT INTO materials (item_name, category, quantity, unit_cost) 
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [item_name, category, quantity, unit_cost]
+    )
+    res.status(201).json({ ok: true, data: rows[0] })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+const port = process.env.PORT || 10000
+app.listen(port, () => console.log('API running on', port))
