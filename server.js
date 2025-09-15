@@ -6,15 +6,16 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
+// --- Database connection (Render Postgres) ---
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 })
 
-// health check
+// --- Health check (used by Render) ---
 app.get('/api/health', (_, res) => res.json({ ok: true }))
 
-// one-time bootstrap: creates tables
+// --- One-time bootstrap: create tables ---
 app.post('/api/bootstrap', async (_, res) => {
   try {
     await pool.query(`
@@ -53,10 +54,32 @@ app.post('/api/bootstrap', async (_, res) => {
   }
 })
 
-// simple read (optional check)
+// --- READ tasks (simple check) ---
 app.get('/api/tasks', async (_, res) => {
-  const { rows } = await pool.query('select * from tasks order by id desc')
-  res.json(rows)
+  try {
+    const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id DESC')
+    res.json(rows)
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+// --- CREATE task (this was missing) ---
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const { title, status = 'todo', amount = 0 } = req.body ?? {}
+    if (!title) return res.status(400).json({ ok: false, error: 'title is required' })
+
+    const { rows } = await pool.query(
+      'INSERT INTO tasks (title, status, amount) VALUES ($1, $2, $3) RETURNING *',
+      [title, status, amount]
+    )
+    res.status(201).json(rows[0])
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
 })
 
 const port = process.env.PORT || 10000
