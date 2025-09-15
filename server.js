@@ -13,7 +13,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 })
 
-// ---- Multer in-memory storage (we store bytes in Postgres) ----
+// ---- Multer in-memory storage (Plan B: file bytes to Postgres) ----
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 } // 2MB max; adjust as needed
@@ -22,7 +22,7 @@ const upload = multer({
 // ---- Health check ----
 app.get('/api/health', (_, res) => res.json({ ok: true }))
 
-// ---- One-time bootstrap to ensure tables exist ----
+// ---- Bootstrap: create/upgrade tables (idempotent/safe to re-run) ----
 app.post('/api/bootstrap', async (_, res) => {
   try {
     await pool.query(`
@@ -51,8 +51,20 @@ app.post('/api/bootstrap', async (_, res) => {
         quantity NUMERIC(10,2) NOT NULL,
         unit_cost NUMERIC(12,2) NOT NULL,
         total NUMERIC(12,2) GENERATED ALWAYS AS (quantity * unit_cost) STORED,
+        image_url TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
+
+      -- In case materials table already existed, ensure image_url exists
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name='materials' AND column_name='image_url'
+        ) THEN
+          ALTER TABLE materials ADD COLUMN image_url TEXT;
+        END IF;
+      END$$;
 
       CREATE TABLE IF NOT EXISTS material_images (
         id SERIAL PRIMARY KEY,
@@ -62,13 +74,6 @@ app.post('/api/bootstrap', async (_, res) => {
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `)
-
-    // Ensure URL column exists for materials that store a public link instead of bytes
-    await pool.query(`
-      ALTER TABLE materials
-      ADD COLUMN IF NOT EXISTS image_url TEXT
-    `)
-
     res.json({ ok: true })
   } catch (e) {
     console.error(e)
@@ -76,7 +81,7 @@ app.post('/api/bootstrap', async (_, res) => {
   }
 })
 
-/* ---------------- TASKS (basic) ---------------- */
+// ---------------- TASKS (basic) ----------------
 app.get('/api/tasks', async (_, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id DESC')
@@ -103,21 +108,12 @@ app.post('/api/tasks', async (req, res) => {
   }
 })
 
-/* --------------- MATERIALS (JSON) --------------- */
-
-// List materials (include whether a stored file exists)
+// --------------- MATERIALS (JSON first-class) ---------------
 app.get('/api/materials', async (_, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
-        m.id,
-        m.item_name,
-        m.category,
-        m.quantity,
-        m.unit_cost,
-        m.total,
-        m.created_at,
-        m.image_url,
+        m.*,
         EXISTS (
           SELECT 1 FROM material_images mi WHERE mi.material_id = m.id
         ) AS has_file
@@ -131,38 +127,18 @@ app.get('/api/materials', async (_, res) => {
   }
 })
 
-// Create material (no image)
 app.post('/api/materials', async (req, res) => {
   try {
-    const { item_name, category, quantity, unit_cost } = req.body ?? {}
+    const { item_name, category, quantity, unit_cost, image_url } = req.body ?? {}
     if (!item_name || quantity == null || unit_cost == null) {
       return res.status(400).json({ ok: false, error: 'item_name, quantity, unit_cost required' })
     }
-    const { rows } = await pool.query(
-      `INSERT INTO materials (item_name, category, quantity, unit_cost)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
-      [item_name, category, quantity, unit_cost]
-    )
-    res.status(201).json({ ok: true, data: rows[0] })
-  } catch (e) {
-    console.error(e)
-    res.status(500).json({ ok: false, error: e.message })
-  }
-})
 
-/* ------ MATERIALS: SAVE A PUBLIC IMAGE URL (JSON) ------ */
-// POST /api/materials/url
-// Body: { image_url, item_name, category, quantity, unit_cost }
-app.post('/api/materials/url', async (req, res) => {
-  try {
-    const { image_url, item_name, category, quantity, unit_cost } = req.body ?? {}
-    if (!image_url || !item_name || quantity == null || unit_cost == null) {
-      return res.status(400).json({ ok: false, error: 'image_url, item_name, quantity, unit_cost required' })
-    }
     const { rows } = await pool.query(
       `INSERT INTO materials (item_name, category, quantity, unit_cost, image_url)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [item_name, category, quantity, unit_cost, image_url]
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING *`,
+      [item_name, category ?? null, quantity, unit_cost, image_url ?? null]
     )
     res.status(201).json({ ok: true, data: rows[0] })
   } catch (e) {
@@ -171,9 +147,7 @@ app.post('/api/materials/url', async (req, res) => {
   }
 })
 
-/* -------- MATERIALS + IMAGE (multipart upload) -------- */
-// POST /api/materials/upload (multipart/form-data)
-// Fields: file (File), item_name, category, quantity, unit_cost
+// --------- (Optional) MATERIALS + IMAGE BYTES upload ----------
 app.post('/api/materials/upload', upload.single('file'), async (req, res) => {
   const file = req.file
   const { item_name, category, quantity, unit_cost } = req.body ?? {}
@@ -192,26 +166,17 @@ app.post('/api/materials/upload', upload.single('file'), async (req, res) => {
     const material = await client.query(
       `INSERT INTO materials (item_name, category, quantity, unit_cost)
        VALUES ($1,$2,$3,$4) RETURNING *`,
-      [item_name, category, unit_cost == null ? null : quantity, unit_cost] // (kept logic tidy below)
-    )
-    // Correct the parameter order: quantity ($3) first, then unit_cost ($4)
-    // If you pasted the code above, let's re-run insert with correct values:
-    const material2 = await client.query(
-      `UPDATE materials
-       SET item_name=$1, category=$2, quantity=$3, unit_cost=$4
-       WHERE id=$5
-       RETURNING *`,
-      [item_name, category, quantity, unit_cost, material.rows[0].id]
+      [item_name, category ?? null, quantity, unit_cost]
     )
 
     await client.query(
       `INSERT INTO material_images (material_id, mime_type, bytes)
        VALUES ($1,$2,$3)`,
-      [material2.rows[0].id, file.mimetype, file.buffer]
+      [material.rows[0].id, file.mimetype, file.buffer]
     )
 
     await client.query('COMMIT')
-    res.status(201).json({ ok: true, data: material2.rows[0] })
+    res.status(201).json({ ok: true, data: material.rows[0] })
   } catch (e) {
     await client.query('ROLLBACK')
     console.error(e)
@@ -221,8 +186,7 @@ app.post('/api/materials/upload', upload.single('file'), async (req, res) => {
   }
 })
 
-/* -------- Serve latest image for a material -------- */
-// GET /api/materials/:id/image
+// -------- Serve latest image bytes for a material (if uploaded) -------
 app.get('/api/materials/:id/image', async (req, res) => {
   try {
     const { rows } = await pool.query(
