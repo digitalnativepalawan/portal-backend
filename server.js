@@ -54,7 +54,9 @@ app.post('/api/bootstrap', async (_, res) => {
   }
 })
 
-// --- READ tasks ---
+/* =========================
+ *        TASKS
+ * ========================= */
 app.get('/api/tasks', async (_, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id DESC')
@@ -65,17 +67,82 @@ app.get('/api/tasks', async (_, res) => {
   }
 })
 
-// --- CREATE task ---
 app.post('/api/tasks', async (req, res) => {
   try {
     const { title, status = 'todo', amount = 0 } = req.body ?? {}
-    if (!title) {
-      return res.status(400).json({ ok: false, error: 'title is required' })
-    }
+    if (!title) return res.status(400).json({ ok: false, error: 'title is required' })
 
     const { rows } = await pool.query(
       'INSERT INTO tasks (title, status, amount) VALUES ($1, $2, $3) RETURNING *',
       [title, status, amount]
+    )
+    res.status(201).json({ ok: true, data: rows[0] })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+/* =========================
+ *        LABOR
+ * ========================= */
+app.get('/api/labor', async (_, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM labor ORDER BY id DESC')
+    res.json({ ok: true, data: rows })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+app.post('/api/labor', async (req, res) => {
+  try {
+    const { worker_name, role = null, hours, rate } = req.body ?? {}
+    if (!worker_name) return res.status(400).json({ ok: false, error: 'worker_name is required' })
+    if (hours == null || rate == null) {
+      return res.status(400).json({ ok: false, error: 'hours and rate are required' })
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO labor (worker_name, role, hours, rate)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [worker_name, role, hours, rate]
+    )
+    res.status(201).json({ ok: true, data: rows[0] })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+/* =========================
+ *      MATERIALS
+ * ========================= */
+app.get('/api/materials', async (_, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM materials ORDER BY id DESC')
+    res.json({ ok: true, data: rows })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ ok: false, error: e.message })
+  }
+})
+
+app.post('/api/materials', async (req, res) => {
+  try {
+    const { item_name, category = null, quantity, unit_cost } = req.body ?? {}
+    if (!item_name) return res.status(400).json({ ok: false, error: 'item_name is required' })
+    if (quantity == null || unit_cost == null) {
+      return res.status(400).json({ ok: false, error: 'quantity and unit_cost are required' })
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO materials (item_name, category, quantity, unit_cost)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [item_name, category, quantity, unit_cost]
     )
     res.status(201).json({ ok: true, data: rows[0] })
   } catch (e) {
