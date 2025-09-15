@@ -54,28 +54,30 @@ app.post('/api/bootstrap', async (_, res) => {
   }
 })
 
-// --- READ tasks (simple check) ---
+// --- READ tasks ---
 app.get('/api/tasks', async (_, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM tasks ORDER BY id DESC')
-    res.json(rows)
+    res.json({ ok: true, data: rows })
   } catch (e) {
     console.error(e)
     res.status(500).json({ ok: false, error: e.message })
   }
 })
 
-// --- CREATE task (this was missing) ---
+// --- CREATE task ---
 app.post('/api/tasks', async (req, res) => {
   try {
     const { title, status = 'todo', amount = 0 } = req.body ?? {}
-    if (!title) return res.status(400).json({ ok: false, error: 'title is required' })
+    if (!title) {
+      return res.status(400).json({ ok: false, error: 'title is required' })
+    }
 
     const { rows } = await pool.query(
       'INSERT INTO tasks (title, status, amount) VALUES ($1, $2, $3) RETURNING *',
       [title, status, amount]
     )
-    res.status(201).json(rows[0])
+    res.status(201).json({ ok: true, data: rows[0] })
   } catch (e) {
     console.error(e)
     res.status(500).json({ ok: false, error: e.message })
